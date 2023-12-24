@@ -1,0 +1,278 @@
+```{r}
+library(survival)
+library(survey)
+library(ranger)
+library(dplyr)
+library(ggfortify)
+library(hexbin)
+library("survival")
+library("survminer")
+library("Rcpp")
+library("survival")
+library("survminer")
+library("Rcpp")
+library(ggsurvfit)
+library(fastDummies)
+library(fitdistrplus)
+library(tidymodels)
+library(tidybayes)
+library("SurvRegCensCov")
+library("eha")
+library("jskm")
+library("gtsummary")
+library(flextable)
+
+```
+
+
+```{r}
+data <- read.csv("C:/Users/YES TECHNOLOGY LTD/Desktop/Research/Survival analysis/Fertility Return/time to pregnancy.csv")
+```
+
+
+
+```{r}
+data <- data %>% 
+  rename('V002' = "Household.number", 'V005'="Women.s.individual.sample.weight..6.decimals.", 
+         'V025' = "Type.of.place.of.residence", 'V021'="Primary.sampling.unit")
+```
+
+```{r}
+df = data[,c('V002','V005', 'V021', 'Respondent.s.current.age', "V025", "Highest.educational.level", "Wealth.index.combined", "Total.children.ever.born", 
+       "method_stopped", "time_method_used", "grouped_method_stopped", "time",  "event","Hemoglobin.level",                                 "Respondent.s.weight.in.kilograms..1.decimal.","Respondent.s.height.in.centimeters..1.decimal." )]
+```
+
+```{r}
+df$education <- factor(df$Highest.educational.level,labels=c("No Education", "Primary", "secondary", "Higher"))
+df$wealth <- factor(df$Wealth.index.combined, labels = c("Poorest", "Poorer", "Middle", "Richer", "Richest"))
+df <- subset(df, select = -c(Highest.educational.level,Wealth.index.combined))
+df$location <- factor(df$V025,labels=c("Rural", "Urban"))
+
+df <- df %>% 
+        rename( "height" = "Respondent.s.height.in.centimeters..1.decimal.",
+                "weight" = "Respondent.s.weight.in.kilograms..1.decimal.",
+                "age" = "Respondent.s.current.age", 
+                 "number_children" = "Total.children.ever.born")
+
+#Mapping Values in V025. (1:Urban, 2: rural). We need to change 2 to zero
+
+df$V025[df$V025 == 2] <- 0
+
+#Converting height in meters and weight in Kilogram
+df$height <- df$height/1000
+df$weight <- df$weight/10
+
+#Create Variable BMI
+df$bmi <- df$weight / (df$height * df$height)
+
+#Convert Hemoglobin into mg/dl
+df$Hemoglobin.level <- df$Hemoglobin.level / 10
+```
+
+# Applying Study Design
+```{r}
+df$sampleweights <- (df$'V005')/1000000
+design=svydesign(ids=~df$V021+V002,strata=~df$V025,  weights=~sampleweights, data=df)
+```
+
+
+
+#MODELING WITH WEIBULL
+```{r}
+table1 <- tbl_svysummary(design, label = list(location ~ "Type of Residence", age = 'Respondent Age', bmi = "Body Mass Index",number_children = "Number of Children", education = 'High Level of Education', wealth = 'Wealth Category',
+              time_method_used = 'Time used contraceptive (Months)',grouped_method_stopped = 'Method Stopped', time =                                   "Time to Pregnancy (Months)" ), 
+               missing = "no", 
+               include = c('age', 'location','bmi','number_children','education', 'wealth',"time_method_used",                                          "grouped_method_stopped", "time" ))
+table1
+```
+
+
+# KAPLAN MEIER 
+```{r}
+km <- svykm(Surv(time, event) ~ 1, design, data=df)
+
+svyjskm(km,table = FALSE,xlabs = "Time-to-event",ylabs = NULL, xlims = c(0, max(km$time)),
+  ylims = c(0, 1),surv.scale = c("default", "percent"),main = "",pval = FALSE,
+  pval.size = 5,pval.coord = c(NULL, NULL),pval.testname = F,marks = TRUE,shape = 3,
+  legend = FALSE,legendposition = c(0.85, 0.8),ci = FALSE,subs = NULL,label.nrisk = "Numbers at risk",
+  size.label.nrisk = 10,linecols = "Set1",dashed = FALSE,cumhaz = F,cluster.option = "None",
+  cluster.var = NULL,data = NULL,cut.landmark = NULL,showpercent = F,status.cmprsk = NULL,
+  linewidth = 0.75,
+)
+```
+
+```{r}
+km <- svykm(Surv(time, event) ~ 1, design, data=df)
+svyjskm(km, cumhaz = T, ylab = "Cumulative incidence (%)", surv.scale = "percent", pval = T, design = dpbc, pval.coord = c(300, 0.7), showpercent = T) 
+```
+
+
+```{r}
+km <- survfit(Surv(time, event) ~ 1, data=df)
+
+ggsurvplot(
+  km,
+  size = 1, 
+  censor = FALSE,
+  palette =
+    c("#0000FF", "#2E9FDF"),
+  conf.int = TRUE,
+  xlab = "Time in Months", 
+  ylab = "Estimated Survival Probability",
+  legend = "none",
+  ylim = c(0,1.05),
+  axes.offset = FALSE,
+  pval = TRUE,              
+  risk.table = FALSE,        
+  ggtheme = theme_bw()      # Change ggplot2 theme
+)
+
+
+```
+
+```{r}
+km_method <- survfit(Surv(time, event) ~ grouped_method_stopped, data=data)
+
+ggsurvplot(
+  km_method,
+  data = data,
+  size = 1, 
+  censor = FALSE,
+  palette =
+    c("#0000FF", "red", "magenta", "yellow", "#200099"),
+  conf.int = FALSE,
+  xlab = "Time in Months", 
+  ylab = "Estimated Survival Probability",
+  legend = "none",
+  ylim = c(0,1.05),
+  axes.offset = FALSE,
+  pval = TRUE,              
+  risk.table = FALSE,        
+  ggtheme = theme_bw()
+)
+
+```
+
+# Univariate Study
+```{r}
+univ <- tbl_uvregression(
+  df,
+  method=coxph,
+  y = Surv(time = time, event = event),
+  exponentiate = TRUE, 
+  include = -c(V002, V002,V005,V021,V025,method_stopped,sampleweights), 
+  hide_n = TRUE
+)
+
+univ
+```
+
+
+```{r}
+
+model <- svycoxph(Surv(time, event) ~ grouped_method_stopped+age+time_method_used+number_children, design)
+model1 <- coxph(Surv(time, event) ~ grouped_method_stopped+age+time_method_used+number_children, data=df)
+summary(model)
+
+names <- c("grouped_method_stoppedImplants", "grouped_method_stoppedInjection", "grouped_method_stoppedIUD", "grouped_method_stoppedPill", "age", "time_method_used", "number_children")
+Coefficient <- round(summary(model)$coefficients[,1], 5)
+Hazard_Ratio <- round(exp(coef(model)), 2)
+CI_Hazard_ratio <- round(exp(confint(model)), 2)
+Z_stat <- round(summary(model)$coefficients[,5], 5)
+P_value <- round(summary(model)$coefficients[,6], 5)
+
+model
+
+table2 <- as.data.frame(cbind(names, Coefficient, Hazard_Ratio, CI_Hazard_ratio, Z_stat, P_value))
+table2 
+
+
+```
+
+```{r}
+
+```
+# Testing of Cox Assumptions
+```{r}
+test.ph <- cox.zph(model)
+test.ph
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(test.ph)
+```
+
+
+```{r}
+
+model1 <- coxph(Surv(time, event) ~ grouped_method_stopped+age+time_method_used+number_children, data=df)
+
+ggsurvplot(survfit(model1, data=df), color = "magenta", censor = FALSE,
+  legend.title = "Cox Proportional Survival Plot",
+  legend.labs = c(""),
+  xlab = "Time in Months", 
+  ylab = "Estimated Survival Probability")
+```
+
+
+```{r}
+new <- with(df,
+               data.frame(grouped_method_stopped = c("Barrier & Traditional","Implants", "Injection", "Pill", "IUD"), 
+                          age = rep(mean(age), 5),
+                          time_method_used = rep(mean(time_method_used), 5),
+                          number_children = rep(mean(number_children), 5)
+               )
+)
+
+
+model2 <- survfit(model1, newdata = new)
+
+summary(model2)
+
+ggsurvplot(model2,  conf.int = FALSE, palette = c("#0000FF", "red", "magenta", "black", "green", "black", "green"), 
+           censor = FALSE, surv.median.line = "hv", data=new,legend.title = "Contraceptive Method:", 
+           legend.labs = c("Barrier and Traditional", "Implants", "Injection", "Pill", "IUD"))
+
+```
+
+```{r}
+flipped_surv_fit <- model2
+flipped_surv_fit$surv <- 1 - flipped_surv_fit$surv
+
+flipped_surv_fit <- summary(flipped_surv_fit)
+flipped_surv_fit$surv
+
+toplot_data <- data.frame(x = flipped_surv_fit$time, y = flipped_surv_fit$surv)
+toplot_data
+```
+
+## Evaluating Pregnancy probability per different contraceptive methods
+
+```{r}
+selected_rows <- c(1, 2, 3, 6, 12, 24, 35)
+selected_data <- toplot_data[selected_rows, ]
+selected_data
+```
+
+
+```{r}
+# Create flextable object
+ft <- flextable(data = selected_data) %>% 
+  theme_zebra %>% 
+  autofit
+# See flextable in RStudio viewer
+ft
+
+# Create a temp file
+tmp <- tempfile(fileext = ".docx")
+
+# Create a docx file
+read_docx() %>% 
+  body_add_flextable(ft) %>% 
+  print(target = tmp)
+
+# open word document
+browseURL(tmp)
+```
+
